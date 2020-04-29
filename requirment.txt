@@ -1,0 +1,5 @@
+## jenkins-plugin
+kubernetes continue deploy   
+set build users var
+pipeline
+

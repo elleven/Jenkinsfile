@@ -1,0 +1,108 @@
+def getNodePort(String projectName) {
+    if (projectName == "test-nd") {
+        return 30021
+    }
+    else if (projectName == "test-bs") {
+        return 30022
+    }
+    return 30023
+}
+
+def getConf(String projectName) {
+    if (projectName == "test-nd") {
+        return "test-nd.conf"
+    }
+    else if (projectName == "test-au") {
+        return "test-au.conf"
+    }
+    else if(projectName == "test-us"){
+        return "test-us-us.conf"
+    }
+    return "test.conf"
+}
+
+def getProjectName() {
+    if (env.gitlabBranch) {
+        version = env.gitlabBranch
+        p = version.split("_")[2]
+        if (p == "nd") {
+            return "test-nd"
+        }
+        else if (p == "au") {
+            return "test-au"
+        }else if(p == "us"){
+            return "test-us"
+        }
+        return "test-bs"
+    }
+    return env.ProjectName
+}
+
+def getMavenCMD(String projectName) {
+    if (projectName == "nd-fund" || projectName == "test-base") {
+        return "mvn -T 4 -Ptest -Dmaven.test.skip=true -U clean install";
+    }
+    if (projectName == "test") {
+        return "mvn -Dmaven.test.skip=true -U clean install";
+    }
+    if (projectName == "test-base-au") {
+        return "mvn -Ptest-au -Dmaven.test.skip=true -U clean install"
+    }
+}
+
+def get_service_type(String version) {
+    if (!version.startsWith("test_gz")) {
+        return env.ServiceType;
+    }
+    branch_num = Integer.parseInt(version.split("_")[2]);
+    if (branch_num >=4 && branch_num <= 5) {
+        return "server_rpc";
+    }
+    return env.ServiceType;
+}
+
+def get_deploy_env(String version) {
+    if (!version.startsWith("test_gz")) {
+        return env.DeployEnv;
+    }
+    branch_num_str = version.split("_")[2];
+    branch_num = Integer.parseInt(branch_num_str);
+    prefix = ""
+    if (branch_num >=4 && branch_num <= 5) {
+        prefix = "testrpc";
+    }
+    else {
+        if (env.ServiceType == 'server_rpc') {
+            prefix = "testrpc"
+        }
+        else {
+            prefix = "test"
+        }
+    }
+    return prefix + branch_num_str;
+}
+
+
+def get_dockerfile(String project, String py_verison) {
+    if (project == "test-base-au") {
+        return "test-base.Dockerfile"
+    }
+    if (project == "customer_ipo" || project == "customer_support") {
+        res = project + ".Dockerfile";
+    }
+    else {
+        if (py_verison == "Python3") {
+            res = project + ".py3.Dockerfile"
+        }
+        else {
+            res = project + ".Dockerfile"
+        }
+    } 
+    return res.replaceAll("_", "-");
+}
+def getGitProjectName(String ProjectName) {
+    if (ProjectName == "test-base-au") {
+        return "test-base"
+    }
+    return ProjectName
+}

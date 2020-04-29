@@ -1,0 +1,40 @@
+pipeline {
+   agent { label 'work-node' }
+   options { 
+       buildDiscarder(logRotator(numToKeepStr: '10')) 
+       disableResume()
+       timestamps()
+   }
+   parameters {
+        choice(name: 'ProjectName', choices: ['customer', 'customer_file'], description: '项目名称')
+        string(name: 'Version', defaultValue: 'master', description: '版本或分支，必填项')
+   }
+  
+   stages {
+        
+        
+        stage('Deploy') {
+            environment {
+                ProjectName = "${sh(script:"echo `if [[ ${env.gitlabBranch} =~ \"test_sg_\" ]]; then echo \"${env.gitlabSourceRepoSshUrl}\"|awk -F'[/.]' '{print \$4}'; else echo \"${ProjectName}\"; fi`", returnStdout: true)}".replaceAll("[\n\r]", "");
+                Version = "${sh(script:"echo `if [[ ${env.gitlabBranch} =~ \"test_sg_\" ]]; then echo \"${env.gitlabBranch}\"; else echo \"${Version}\"; fi`", returnStdout: true)}".replaceAll("[\n\r]", "").replaceAll("[/]", "-");
+            }
+            steps {
+             
+                sh script: '''
+                echo "${ProjectName}"]
+ 
+                ssh lhop@192.168.21.67 "
+                    cd /data0/codes/${ProjectName};
+                    git reset --hard;
+                    git fetch -u origin ${Version}:${Version};
+                    git checkout ${Version};
+                    venv/bin/pip install -r requirements.txt;
+                    echo "supervisorctl restart ${ProjectName}_server:" ;
+                    supervisorctl restart ${ProjectName}_server: ;
+                "
+                '''
+               
+            }
+        }
+    }
+}

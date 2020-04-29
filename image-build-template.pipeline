@@ -1,0 +1,72 @@
+pipeline {
+   agent { label 'work-node' }
+   options { 
+       buildDiscarder(logRotator(numToKeepStr: '10')) 
+       disableResume()
+       timestamps()
+   }
+   parameters {
+        choice(name: 'projectName', choices: ['test0', 'test1', 'test2', 'test3'], description: '项目名称')
+        string(name: 'tag', defaultValue: 'v1.0.0', description: 'tag，必填项')
+    }
+   environment {
+        projectName = "${sh(script:"echo `if [[ ${env.gitlabBranch} =~ \"refs/tags\" ]]; then echo \"${env.gitlabSourceRepoSshUrl}\"|awk -F'[/.]' '{print \$4}'; else echo \"${projectName}\"; fi`", returnStdout: true)}".replaceAll("[\n\r]", "");
+        GitURL = "${sh(script:"echo `if [[ ${env.gitlabBranch} =~ \"refs/tags\" ]]; then echo \"${env.gitlabSourceRepoSshUrl}\"; else echo \"git@git.xxxx.net:ams/${projectName}.git\"; fi`", returnStdout: true)}".replaceAll("[\n\r]", "");
+        tag = getTag()
+        DockerFile = get_dockerfile("${projectName}")
+        
+        NAMESPACE = 'ams'
+        REGISTRY_URI = "registry-inner.xxxx.net"
+        projectNameHypen = "${projectName}".replaceAll("_", "-")
+        Image = "$REGISTRY_URI/$NAMESPACE/prod/${projectNameHypen}:${tag}"
+
+        DEPENENCE_STATIC_DIR = '/data0/jenkins_work_home/workspace/configuration_static/static/inner'
+        DOCKER_FILE_DIR = "/data0/jenkins_work_home/workspace/configuration_dockerfile/Dockerfile"
+        JENKINS_WORK_NODE_HOME = '/data0/jenkins_work_home'
+    }
+   stages {
+        stage('Prepare') {
+            steps {
+                git branch: 'master', credentialsId: "test-key", url: "${GitURL}"
+                sshagent(['test-key']) {
+                        sh script: "git fetch"
+                        sh script: "git checkout ${tag}"
+                    }
+                sh script: "rm -rf .git"
+
+                sh returnStdout: true, script: """
+                    cp ${DEPENENCE_STATIC_DIR}/location_index.json \\
+                    ${DEPENENCE_STATIC_DIR}/location.json\\
+                    ${DOCKER_FILE_DIR}/${DockerFile}\\
+                    ${DOCKER_FILE_DIR}/*.sh\\
+                    ${WORKSPACE}""", label: "Copy static file、Dockerfile"
+                }
+            }
+        stage('Build')  {
+            steps {
+                sh script: "docker build --build-arg AMS_VERSION=${tag} --build-arg AMS_SERVER_PORT=9000 -f ${DockerFile} -t ${Image} .", label: "Docker build"
+                sh script: "docker push ${Image}", label: "Docker push"
+                sh script: "rm ${WORKSPACE}/*.Dockerfile", label: "Remove Dockerfile"
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
+
+def get_dockerfile(String project) {
+    res = project + ".Dockerfile"
+    return res.replaceAll("_", "-");
+}
+
+def getTag() {
+    if (env.gitlabBranch) {
+        return env.gitlabBranch.split("/").last()
+    }
+    return env.tag
+}
+
+

@@ -1,0 +1,49 @@
+pipeline {
+   agent { label 'work-pro-node' }
+   options { 
+       buildDiscarder(logRotator(numToKeepStr: '10')) 
+       disableResume()
+       timestamps()
+   }
+   parameters {
+        string(name: 'Version', defaultValue: 'master', description: '版本,镜像tag ，必填项')
+   }
+   environment {
+        Namespace = "ams"
+        Images_prefix_url = "xxxx"
+        Image = "${env.Images_prefix_url}/test:${env.Version}"
+        DeployName = "${env.JOB_NAME}"
+    }
+   stages {
+        stage('Deploy') {
+            steps {
+                sh script: """
+                /usr/local/bin/kubectl  --namespace ${env.Namespace} \
+                set image deployment -l project=test test=${env.Image} --record
+                """
+            }
+        }
+        stage('Check'){
+            steps {
+                timeout(time:1, unit:'MINUTES') {
+                    waitUntil {
+                        script {
+                        def ret = sh script: "/usr/local/bin/kubectl  --namespace ${env.Namespace} rollout status deployment test-server |grep successfully ", returnStatus: true
+                        return (ret == 0);
+                        }
+                    }
+                }
+                sh "/usr/local/bin/kubectl --namespace ${env.Namespace}  rollout history deployment test-server"
+                timeout(time:1, unit:'MINUTES') {
+                    waitUntil {
+                        script {
+                        def ret = sh script: "/usr/local/bin/kubectl  --namespace ${env.Namespace} rollout status deployment test-server-internal |grep successfully ", returnStatus: true
+                        return (ret == 0);
+                        }
+                    }
+                }
+                sh "/usr/local/bin/kubectl --namespace ${env.Namespace}  rollout history deployment test-server-internal"
+            }
+        }
+    }
+}

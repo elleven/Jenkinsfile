@@ -1,0 +1,75 @@
+pipeline {
+   agent { label 'work-node' }
+   options { 
+       buildDiscarder(logRotator(numToKeepStr: '10')) 
+       disableResume()
+       timestamps()
+   }
+   parameters {
+        choice(name: 'projectName', choices: ['nd-fund', 'test-base'], description: '项目名称')
+        string(name: 'tag', defaultValue: 'v1.0.0', description: '版本tag')
+    }
+   environment {
+        projectName = "${sh(script:"echo `if [[ ${env.gitlabBranch} =~ \"refs/tags\" ]]; then echo \"${env.gitlabSourceRepoSshUrl}\"|awk -F'[/.]' '{print \$4}'; else echo \"${projectName}\"; fi`", returnStdout: true)}".replaceAll("[\n\r]", "");
+        gitURL = "${sh(script:"echo `if [[ ${env.gitlabBranch} =~ \"refs/tags\" ]]; then echo \"${env.gitlabSourceRepoSshUrl}\"; else echo \"git@git.xxxx.net:ams/${projectName}.git\"; fi`", returnStdout: true)}".replaceAll("[\n\r]", "");
+        containerPort = 8077
+        dockerFile = get_dockerfile("${projectName}")
+        REGISTRY_URI = 'registry-inner.xxxx.net'
+        NAMESPACE = 'ams'
+        tag = getTag()
+        projectNameHypen = "${projectName}".replaceAll("_", "-")
+        image = "$REGISTRY_URI/$NAMESPACE/prod/${projectNameHypen}:${tag}"
+        DOCKER_FILE_DIR = "/data0/jenkins_work_home/workspace/configuration_dockerfile/Dockerfile"
+        JENKINS_WORK_NODE_HOME = '/data0/jenkins_work_home'
+        mvnCmd = getMavenCMD("${ProjectName}")
+    }
+   stages {
+        stage('Prepare') {
+            steps {
+                echo "dockerfile ${dockerfile}"
+                sh "ls"
+                git branch: 'master', credentialsId: "oauth-key", url: "${gitURL}"
+                sshagent(['oauth-key']) {
+                        sh script: "git fetch"
+                        sh script: "git checkout ${tag}"
+                }
+                sh script: "rm -rf .git"
+                withMaven(maven: 'maven-3', mavenSettingsConfig: 'f821c13a-1e09-4762-9d61-9f6cc6af7fd6') {
+                    sh "${mvnCMD}"
+                }
+            }
+        }
+        stage('Build')  {
+            steps {
+                sh "cp ${DOCKER_FILE_DIR}/${dockerFile} ${WORKSPACE}"
+                sh script: "docker build --build-arg AMS_VERSION=${tag} --build-arg AMS_SERVER_PORT=${containerPort} -f ${dockerFile} -t ${image} .", label: "Docker build"
+                sh script: "docker push ${Image}", label: "Docker push"
+                sh script: "rm ${WORKSPACE}/*.Dockerfile", label: "Remove Dockerfile"
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
+
+def getMavenCMD(String projectName) {
+    if (projectName == "nd-fund" || projectName == "test-base") {
+        return "mvn -T 4 -Pprod -Dmaven.test.skip=true -U clean install";
+    }
+}
+
+
+def get_dockerfile(String project) {
+    res = project + ".Dockerfile"
+    return res.replaceAll("_", "-");
+}
+
+def getTag() {
+    if (env.gitlabBranch) {
+        return env.gitlabBranch.split("/").last()
+    }
+    return env.tag
+}

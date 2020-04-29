@@ -1,0 +1,79 @@
+apiVersion: apps/v1beta2
+kind: Deployment
+#kind: StatefulSet
+metadata:
+  labels:
+    app: ${JOB_BASE_NAME}
+    version: ${Version}
+  name: ${DeployName}
+  namespace: ${KubeNameSpace}
+spec:
+  #podManagementPolicy: OrderedReady
+  replicas: ${Replicas}
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: ${JOB_BASE_NAME}
+      version: ${Version}
+  #serviceName: ${JOB_BASE_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${JOB_BASE_NAME}
+        version: ${Version}
+    spec:
+      containers:
+        - env:
+            - name: ${LogtailErrorLogName}
+              value: ${LogtailErrorLogValue}
+            - name: ${LogtailStdoutName}
+              value: ${LogtailStdoutValue}
+            - name: ${AccessLogstoreName}
+              value: ${AccessLogstoreValue}
+            - name: ${ErrorLogstoreName}
+              value: ${ErrorLogstoreValue}
+          image: ${Image}
+          imagePullPolicy: Always
+          livenessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            successThreshold: 1
+            tcpSocket:
+              port: ${ContainerPort}
+            timeoutSeconds: 1
+          name: ${DeployName}
+          ports:
+            - containerPort: ${ContainerPort}
+              protocol: TCP
+          resources:
+            limits:
+              cpu: ${LimitsCpu}
+              memory: ${LimitsMemory}
+            requests:
+              cpu: ${LimitsCpu}
+              memory: ${LimitsMemory}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: ${LogtailErrorLogPath}
+              name: ${VolumeMountName}
+      dnsPolicy: ClusterFirst
+      hostAliases:
+        - ip: "xxxxx"
+          hostnames:
+          - "xxxxx"
+        - ip: "xxxxx"
+          hostnames:
+          - "xxx"
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - emptyDir: {}
+          name: ${VolumeMountName}
+  #updateStrategy:
+  #  rollingUpdate:
+  #    partition: 1
+  #  type: RollingUpdate

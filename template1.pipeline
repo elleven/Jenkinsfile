@@ -1,0 +1,103 @@
+pipeline {
+   agent { label 'work-node' }
+   options { 
+       buildDiscarder(logRotator(numToKeepStr: '10')) 
+       disableResume()
+       timestamps()
+   }
+   parameters {
+        string(name: 'Version', defaultValue: 'master', description: '版本或分支，必填项')
+        string(name: 'ContainerPort', defaultValue: '9000', description: '服务监听端口:')
+        choice(name: 'ReplicasNum', choices: ['1'], description: '服务部署节点数量')
+        choice(name: 'NodePort', choices: ['30000'], description: '服务对外映射访问端口')
+        choice(name: 'RequestCpu', choices: ['0.5','1'], description: '服务运行和限制使用cpu数量')
+        choice(name: 'RequestMemory', choices: ['0.5Gi','1Gi','2Gi'], description: '服务运行和限制使用memory数量')
+    }
+   environment { 
+        JENKINS_WORK_NODE_HOME = '/data0/jenkins_work_home'
+        REGISTRY_URI = '0.0.0.0:5000'
+        NAMESPACE = 'oauth'
+        DeployName = "${JOB_BASE_NAME}-${BUILD_ID}"
+        Image = "$REGISTRY_URI/$NAMESPACE/$JOB_BASE_NAME:$BUILD_ID"
+        BUILD_ID_STR = "${BUILD_ID}"
+        DeployTemplate = "**/template-for-deployment.yml"
+        ServiceTemplate =  "**/template-for-service.yml"
+        OldVersionDeployment = "${WORKSPACE}/${JOB_BASE_NAME}-${BUILD_NUMBER}-old.yml"
+        DockerFile = "${JOB_BASE_NAME}.Dockerfile"
+    }
+   stages {
+        stage('Prepare') {
+            steps {
+                // Get some code from a GitHub repository
+                git branch: '${Version}', credentialsId: 'git-key', url: 'git@git.xxx:ams/xxx.git'
+                // prepare env.
+                sh label: '', returnStdout: true, script: """
+                    cp ${JENKINS_WORK_NODE_HOME}/dependence/location_index.json ${JENKINS_WORK_NODE_HOME}/dependence/location.json\\
+                    ${JENKINS_WORK_NODE_HOME}/dependence/known_hosts ${JENKINS_WORK_NODE_HOME}/dependence/template/*.yml\\
+                    ${WORKSPACE}"""
+                }
+            }
+        stage('Build')  {
+            steps {
+                sh "docker build -f ${DockerFile} -t ${Image} ./"
+                sh "docker push ${Image}"
+                echo 'test'
+            }
+        }
+        stage('get current version'){
+            steps {
+                echo "get current running version save to ${OldVersionDeployment}"
+                sh  " /usr/local/bin/kubectl get deployment --namespace ${NAMESPACE} -o yaml -l app=${JOB_BASE_NAME},version!=${Version},buildId!=${BUILD_ID} > ${OldVersionDeployment}"
+                sh  " /usr/local/bin/kubectl get deployment --namespace ${NAMESPACE} -o json -l app=${JOB_BASE_NAME},version!=${Version},buildId!=${BUILD_ID}"
+            }
+        }
+        stage('deploy') {
+            steps {
+                kubernetesDeploy (
+                configs: "${DeployTemplate}",
+                kubeconfigId: 'k8s-key',
+                enableConfigSubstitution: 'True',)
+                }
+            }
+        stage('check'){
+            steps {
+                echo 'check deploy status'
+                timeout(time:5, unit:'MINUTES') {
+                    waitUntil {
+                        script {
+                            def ret = sh script: "/usr/local/bin/kubectl get deployment --namespace ${NAMESPACE} -l app=${JOB_BASE_NAME},version=${Version},buildId=${BUILD_ID} |awk '{print \$5}'|grep ${ReplicasNum} ", returnStatus: true
+                            return (ret == 0);
+                            }
+                        }
+                sh  "/usr/local/bin/kubectl get deployment --namespace ${NAMESPACE} -l app=${JOB_BASE_NAME},version=${Version},buildId=${BUILD_ID}"
+                sleep 5
+            }
+        }
+    }
+        stage('切换流量') {
+            steps {
+                kubernetesDeploy (
+                configs: "${ServiceTemplate}",
+                kubeconfigId: 'k8s-key',
+                enableConfigSubstitution: 'True',
+                )
+                sh  "/usr/local/bin/kubectl get service --namespace ${NAMESPACE} -l name=${JOB_BASE_NAME}"
+                sleep 10
+            }
+        }
+        stage('del old version') {
+            steps {
+                echo "delete deployment use file ${OldVersionDeployment}"
+                sh  "/usr/local/bin/kubectl delete --namespace ${NAMESPACE} -f ${OldVersionDeployment}"
+                script {
+                    def ret = sh script: "/usr/local/bin/kubectl get deployment --namespace ${NAMESPACE} -l app=${JOB_BASE_NAME} |wc -l"
+                        if ( ret > 2) {
+                            echo "Warning found multiple versions of deployment! need to check!"
+                            }
+                        }
+                sh  "/usr/local/bin/kubectl get deployment --namespace ${NAMESPACE} -l app=${JOB_BASE_NAME}"
+                sh  "rm -f ${OldVersionDeployment}"
+            }
+        }
+    }
+}

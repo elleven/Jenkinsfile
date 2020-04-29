@@ -1,0 +1,250 @@
+// require plugin: kubernetes continue deploy and kubenetes cli  
+// Jenkinsfile (Declarative Pipeline)
+
+def getBuildUser () {
+    node('master') {
+        wrap([$class: 'BuildUser']) {
+            return "${env.BUILD_USER}"
+        }
+    }
+}
+
+def getBuildUserEmail () {
+    node('master') {
+        wrap([$class: 'BuildUser']) {
+            return "${env.BUILD_USER_EMAIL}"
+        }
+    }
+}
+
+pipeline {
+    agent any
+    environment {
+        //get build user info
+        BuildUser = getBuildUser()
+        BuildUserEmail = getBuildUserEmail()
+        // package env
+        // deployment and service metadata
+        // variable dynamic
+        Version = "${params.Version}"
+        Repositiory = "${REGISTRY_URL}/${REGISTRY_NAMESPACE}/${JOB_BASE_NAME}"
+        Image = "${Repositiory}:8.5.43-jdk8"  // for test
+        DeployName = "${JOB_BASE_NAME}-${Version}"  // wiki deploy naming-rules
+        Replicas = "${params.ReplicasNum}"
+        ContainerPort = "${params.ContainerPort}" 
+        NodePort = "${params.NodePort}"
+     
+        //constant var
+        KubeNameSpace = "default"
+        ClusterPort = "10010"
+        
+        // limits cpu memory
+        LimitsCpu = "${params.RequestCpu}"
+        LimitsMemory = "${params.RequestMemory}"
+        
+        // aliyun logtail
+        // wiki logtail naming-rules and logpath rules
+        LogtailErrorLogName = "aliyun_logs_${JOB_BASE_NAME}-error-log"
+        LogtailErrorLogValue = "/data0/logs/${JOB_BASE_NAME}/error.log"
+        LogtailErrorLogPath = "/data0/logs/${JOB_BASE_NAME}"
+        LogtailStdoutName = "aliyun_logs_${JOB_BASE_NAME}-stdout"
+        LogtailStdoutValue = "stdout"
+        VolumeMountName = "volumn-sls-${DeployName}"
+        
+        // config template
+        DeployTemplate = "**/template-for-deployment.yml"
+        ServiceTemplate =  "**/template-for-service.yml"
+        
+        // old version
+        OldVersionDeployment = "${env.WORKSPACE}/${env.JOB_BASE_NAME}-${env.BUILD_NUMBER}-old.yml"
+          }
+          
+    stages {
+        stage('debug env') {
+            // when {
+            //    expression { 
+            //        return params.Version != '' ;
+            //    }
+            // }
+            steps {
+                script {
+                    def ret = ( "${params.Version}" == '' )
+                    assert ret instanceof Boolean
+                    if  (ret) {
+                        error ("ERROR:Version必须填写!")
+                    } 
+                }
+                echo "print and check env"
+                sh 'printenv | sort'
+                sh '/usr/local/bin/kubectl version'
+            }
+        }
+    
+        stage('发送审批') {
+            options { retry(3) }
+            input {
+                message "上线需谨慎,发布有风险!"
+                ok "发送给研发负责人审批"
+                parameters {
+                    string(name: 'DEVAUDITOR', defaultValue: 'wangrongbin', description: "请填写研发审计人")
+                }
+            }
+            steps {
+                script {
+                    wrap([$class: 'TimestamperBuildWrapper']) {
+                        def ret = (  "${DEVAUDITOR}"  ==~ /($DEFAULT_DEV_AUDITOR)/)
+                        assert ret instanceof Boolean
+                        if  (!ret) {
+                            error ("无效的审批人,请重新输入")
+                        } 
+                        else {
+                            emailext ( 
+                            subject: "服务:${env.JOB_BASE_NAME}新的上线申请  版本:${env.Version}",
+                            body: """
+                            申请发布人: ${env.BuildUser} <br>
+                            服务: ${env.JOB_BASE_NAME} <br>
+                            版本: ${env.Version} <br> 
+                            镜像: ${env.Image} <br>
+                            状态: 待审批<br>
+                            审批地址: ${BUILD_URL} <br>""", 
+                            to: "${DEVAUDITOR}@sa.com"
+                            )
+                        }
+                    }
+                }   
+            }    
+        }
+        stage('研发审批'){
+            options { retry(3) }
+            input {
+                message "服务:${env.JOB_BASE_NAME} 版本:${env.Version}"
+                ok "审批通过"
+                submitter "${DEFAULT_DEV_SUBMITTER}"
+                parameters {
+                    string(name: 'SAAUDITOR', defaultValue: 'wangrongbin', description: "请填写运维审计人")
+                    choice(name: 'developer', choices: getBuildUser(), description: "申请人")
+                }
+            }
+            steps {
+                script {
+                    def ret = (  "${SAAUDITOR}"  ==~ /($DEFAULT_SA_AUDITOR)/)
+                    assert ret instanceof Boolean
+                    if  (!ret) {
+                        error ("无效的审批人，请重新输入")
+                    } 
+                    else {
+                        emailext ( 
+                            subject: "服务:${env.JOB_BASE_NAME}新的上线申请  版本:${env.Version}",
+                            body: """
+                            申请发布人: ${env.BuildUser} <br>
+                            服务: ${env.JOB_BASE_NAME} <br>
+                            版本: ${env.Version} <br> 
+                            镜像: ${env.Image} <br>
+                            状态: 待审批<br>
+                            审批地址: ${BUILD_URL} <br>""", 
+                            to: "${SAAUDITOR}@sa.com"
+                        )
+                    }
+                }
+            }
+        }
+        stage('运维审批') {
+            input {
+                message "服务:${env.JOB_BASE_NAME} 版本:${env.Version}"
+                ok "审批通过"
+                submitter "${DEFAULT_SA_SUBMITTER}"
+                parameters {
+                    choice(name: 'developer', choices: getBuildUser(), description: "申请人")
+                }
+            }
+            stages {
+                stage('获取当前版本') {
+                    steps {
+                        echo "get current running version save to ${OldVersionDeployment}"
+                        sh " /usr/local/bin/kubectl get deployment -o yaml -l app=${env.JOB_BASE_NAME},version!=${env.Version} > ${OldVersionDeployment}"
+                        sh " /usr/local/bin/kubectl get deployment -o json -l app=${env.JOB_BASE_NAME},version!=${env.Version}"
+                    }
+                }
+                stage('部署新版本') {
+                    steps {
+                        kubernetesDeploy (
+                        configs: "${env.DeployTemplate}",
+                        kubeConfig: [path: '/home/sa/.kube/config'],
+                        enableConfigSubstitution: 'True',
+                        )
+                    }
+                }
+                stage('检查部署状态') {
+                    steps {
+                        echo 'check deploy status'
+                        timeout(time:5, unit:'MINUTES') {
+                            waitUntil {
+                                script {
+                                def ret = sh script: "/usr/local/bin/kubectl get deployment -l app=${env.JOB_BASE_NAME},version=${env.Version} |awk '{print \$5}'|grep ${env.Replicas} ", returnStatus: true
+                                return (ret == 0);
+                                }
+                            }
+                        sh "/usr/local/bin/kubectl get deployment -l app=${env.JOB_BASE_NAME},version=${env.Version}"
+                        sleep 5
+                        }
+                    }
+                }
+                stage('切换流量') {
+                    steps {
+                        kubernetesDeploy (
+                        configs: "${env.ServiceTemplate}",
+                        kubeConfig: [path: '/home/sa/.kube/config'],
+                        enableConfigSubstitution: 'True',
+                        )
+                        sh "/usr/local/bin/kubectl get service -l name=${env.JOB_BASE_NAME}"
+                        sleep 10
+                    }
+                }
+                stage('删除旧版本') {
+                    steps {
+                        //kubernetesDeploy (
+                        //configs: "${env.JOB_BASE_NAME}-${env.BUILD_NUMBER}-old.yml",
+                        //kubeConfig: [path: '/home/sa/.kube/config'],
+                        //enableConfigSubstitution: 'False',
+                        //deleteResource: 'True'
+                        //)
+                        echo "delete deployment use file ${OldVersionDeployment}"
+                        sh "/usr/local/bin/kubectl delete -f ${OldVersionDeployment}"
+                        script {
+                            def ret = sh script: "/usr/local/bin/kubectl get deployment -l app=${env.JOB_BASE_NAME} |wc -l"
+                            if ( ret > 2) {
+                                echo "Warning found multiple versions of deployment! need to check!"
+                            }
+                        }
+                        sh "/usr/local/bin/kubectl get deployment -l app=${env.JOB_BASE_NAME}"
+                        sh "rm -f ${OldVersionDeployment}"
+                    }
+                }
+            }
+        }
+        
+    }
+    post {
+      always {
+          script {
+            wrap([$class: 'BuildUser']) {
+                emailext (
+                    attachLog: true,
+                    subject: "Program:${env.JOB_BASE_NAME} Version:${env.Version} deploy ${currentBuild.currentResult}",
+                    body: """
+                    申请发布人: ${env.BUILD_USER} <br>
+                    服务: ${env.JOB_BASE_NAME} <br>
+                    镜像: ${env.Image} <br>
+                    状态：${currentBuild.currentResult} <br>
+                    测试端口: 172.17.93.55:${env.NodePort} <br>
+                    详情 ：${env.BUILD_URL} <br>
+                    用时 ：${currentBuild.durationString} <br>""",
+                    to: "${env.BUILD_USER_EMAIL}",
+                    replyTo: 'yunwei@tigerbrokers.com'
+                    )
+                }
+            } 
+        }
+    }
+}
+

@@ -1,0 +1,84 @@
+pipeline {
+   agent { label 'work-node' }
+   options { 
+       buildDiscarder(logRotator(numToKeepStr: '10')) 
+       disableResume()
+       timestamps()
+   }
+   environment { 
+        version = getVersion()
+        protoGitURL = getProtoURL()
+        protoGitDir = "${WORKSPACE}/test-server"
+        protoDir = "${WORKSPACE}/protos"
+        protoPackage = "test"
+        versionStr = getVersionStr("${version}")
+        versionNumStr = getVersionNumStr("${versionStr}")
+    }
+   stages {
+        stage('Clone proto')  {
+            steps {
+                echo "${versionStr} ${versionNumStr}"
+                sh script: "ls"
+                echo "${version} ${protoGitURL} ${env.gitlabBranch}"
+                dir ("test-server") {
+                    git branch: "${version}", credentialsId: "test-key", url: "${protoGitURL}"
+                }
+                dir ("protos") {
+                    sh script: "cp -r ${protoGitDir}/${protoPackage} ."
+                    sh script: "ls ${protoDir}"
+                }
+                sh script: "ls"
+            }
+        }
+        stage('Python'){
+            environment { 
+                pythonGitURL = "git@git.xxxx.git"
+                genDir = "${WORKSPACE}/test-2"
+                versionBranch = "branch_${versionStr}"
+            }
+            steps {
+                dir ("test-2") {
+                    git branch: "master", credentialsId: "test-key", url: "${pythonGitURL}"
+                    sh script: "git rm -r ${protoPackage}"
+                    sh script: "python ${protoGitDir}/gen_python.py ${protoDir} ${genDir} ${protoPackage} ${versionNumStr}"
+                    sh script: "git add -A"
+                    catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                        sh script: "git commit -m \"update\""
+                    }
+                    sh script: "git tag -a ${versionStr} -m \"${versionStr}\""
+                    sshagent(['test-key']) {
+                        sh "git push origin master && git push origin ${versionStr}"
+                        
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
+
+def getProtoURL() {
+    if (env.gitlabSourceRepoSshUrl) {
+        return env.gitlabSourceRepoSshUrl
+    }
+    return "git@git.xxxxx.net:libs/test-server.git"
+}
+
+def getVersion() {
+    if (env.gitlabSourceRepoSshUrl) {
+        return env.gitlabBranch
+    }
+    return "refs/tags/" + env.version
+}
+
+def getVersionStr(String version) {
+    return version.split("/").last()
+}
+
+def getVersionNumStr(String versionStr) {
+    return versionStr[1..-1]
+}
